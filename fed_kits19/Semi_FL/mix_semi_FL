@@ -1,0 +1,347 @@
+import argparse
+import logging
+import os
+import random
+import socket
+import sys
+
+import numpy as np
+import psutil
+import setproctitle
+import torch
+import wandb
+from torch import nn
+import shutil
+from collections import OrderedDict
+import nibabel as nib
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "../../../../../")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "../../../../")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "../../../")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "../../")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "../")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "")))
+
+from FedML.fedml_api.distributed.semi_mixup.FedAvgAPI import FedML_FedAvg_distributed
+from FML_backup.fed_kits19.semi_dataset import SemiFedKiTS19
+from FedML.fedml_api.distributed.semi_mixup.FedAvgAPI import FedML_init
+from fed_kits19.dataset_creation_scripts.paths import *
+from nnunet.network_architecture.initialization import InitWeights_He
+from fed_kits19.model import Baseline
+from dataset_creation_scripts.nnunet_library.data_augmentations import transformations, semi_transformations
+from batchgenerators.utilities.file_and_folder_operations import *
+from nnunet.training.data_augmentation.default_data_augmentation import default_3D_augmentation_params, get_patch_size
+from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss
+# from nnunet.paths import *
+# from evaluation_metrics.kits19_eval import evaluation
+
+# plans_file = preprocessing_output_dir + '/Task064_KiTS_labelsFixed/nnUNetPlansv2.1_plans_3D.pkl'
+# output_directory = network_training_output_dir_base
+# dataset_directory = preprocessing_output_dir + '/Task064_KiTS_labelsFixed/nnUNetData_plans_v2.1_stage0'
+
+plans_file = '/Users/erummushtaq/Desktop/Medical_Datasets/KiTS19/kits19/kits19_preprocessing/Task064_KiTS_labelsFixed/nnUNetPlansv2.1_plans_3D.pkl'
+output_directory = []
+dataset_directory = '/Users/erummushtaq/Desktop/Medical_Datasets/KiTS19/kits19/kits19_preprocessing/Task064_KiTS_labelsFixed/nnUNetData_plans_v2.1_stage0'
+def add_args(parser):
+    """
+    parser : argparse.ArgumentParser
+    return a parser added with args required by fit
+    """
+    # Training settings
+    parser.add_argument('--model', type=str, default='mobilenet', metavar='N',
+                        help='neural network used in training')
+
+    parser.add_argument('--dataset', type=str, default='cifar10', metavar='N',
+                        help='dataset used for training')
+
+    parser.add_argument('--phase', type=str, default='training', metavar='N',
+                        help='dataset used for training')
+
+    parser.add_argument('--data_dir', type=str, default='./../../../data/cifar10',
+                        help='data directory')
+
+    parser.add_argument('--partition_method', type=str, default='hetero', metavar='N',
+                        help='how to partition the dataset on local workers')
+
+    parser.add_argument('--partition_alpha', type=float, default=0.5, metavar='PA',
+                        help='partition alpha (default: 0.5)')
+
+    parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping')
+
+    parser.add_argument('--client_num_in_total', type=int, default=1000, metavar='NN',
+                        help='number of workers in a distributed cluster')
+
+    parser.add_argument('--client_num_per_round', type=int, default=4, metavar='NN',
+                        help='number of workers')
+
+    parser.add_argument('--run_id', type=int, default=4, metavar='NN',
+                        help='number of workers')
+
+    parser.add_argument('--batch_size', type=int, default=64, metavar='N',
+                        help='input batch size for training (default: 64)')
+
+    parser.add_argument('--client_optimizer', type=str, default='adam',
+                        help='SGD with momentum; adam')
+
+    parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
+                        help='learning rate (default: 0.001)')
+
+    parser.add_argument('--wd', help='weight decay parameter;', type=float, default=0.001)
+
+    parser.add_argument('--epochs', type=int, default=5, metavar='EP',
+                        help='how many epochs will be trained locally')
+
+    parser.add_argument('--comm_round', type=int, default=10,
+                        help='how many round of communications we shoud use')
+
+    parser.add_argument('--is_mobile', type=int, default=0,
+                        help='whether the program is running on the FedML-Mobile server side')
+
+    parser.add_argument('--frequency_of_train_acc_report', type=int, default=1,
+                        help='the frequency of training accuracy report')
+
+    parser.add_argument('--frequency_of_test_acc_report', type=int, default=1,
+                        help='the frequency of test accuracy report')
+
+    parser.add_argument('--gpu_server_num', type=int, default=1,
+                        help='gpu_server_num')
+
+    parser.add_argument("--img_size", default=224, type=int,
+                        help="Resolution size")
+
+    parser.add_argument('--starting_gpu', type=int, default=4,
+                        help='start_gpu')
+
+    parser.add_argument('--is_debug', type=int, default=0, help='debug mode')
+
+    parser.add_argument("--pretrained_dir", type=str,
+                        default="./../../fedml_api/model/cv/pretrained/Transformer/vit/ViT-B_16.npz",
+                        help="Where to search for pretrained vit models.")
+
+    parser.add_argument('--gpu_num_per_server', type=int, default=4,
+                        help='gpu_num_per_server')
+
+    parser.add_argument('--ci', type=int, default=0,
+                        help='CI')
+
+    parser.add_argument('--frequency_of_the_test', type=int, default=5,
+                        help='CI')
+
+    parser.add_argument('--local_epoch', type=int, default=1,
+                        help='Local Epoch')
+
+    parser.add_argument('--threshold', type=int, default=10,
+                        help='CI')
+
+    parser.add_argument('--is_pre_trained', type=int, default=1,
+                        help='whether the program is running on the FedML-Mobile server side')
+
+    parser.add_argument('--backend', type=str, default="MPI",
+                        help='Backend for Server and Client')
+
+    parser.add_argument('--ncl', type=int, default=2,
+                        help='number of label clients')
+
+    parser.add_argument('--ncu', type=int, default=4,
+                        help='number of unlabel clients')
+
+    parser.add_argument('--client_number', type=int,
+                        default=2, metavar='NN', help='number of workers')
+
+    parser.add_argument('--gpu', type=int, default=5,
+                        help='gpu')
+
+    # Adding more args
+    parser.add_argument('--weight', type=str, default='basic',
+                        help='basic, threshold, expo, dynamic')
+
+    parser.add_argument('--threshold_type', type=str, default='dynamic',
+                        help='constant, dynamic')
+    parser.add_argument('--apply_threshold', type=str, default='True',
+                        help='True, False')
+    parser.add_argument('--thresholded_value', type=float, default='0.50',
+                        help='True, False') 
+    parser.add_argument('--max_thresholded_value', type=float, default='0.90',
+                        help='True, False') 
+
+    # Teacher Model
+    parser.add_argument('--teacher_run_id', type=int, default=5, help='teacher_run_id')   
+    parser.add_argument('--teacher_lr', type=float, default=3e-4, help='teacher_lr')               
+    parser.add_argument('--teacher_comm_round', type=int, default=3e-4, help='teacher_comm_round')
+    parser.add_argument('--teacher_epoches', type=int, default=1, help='teacher_epoches')
+    # parser.add_argument("--gpu_num_per_server", type=int, default=4, help="gpu_num_per_server")
+
+    #Weight Scheme
+    parser.add_argument('--weight_scheme', type=str, default='dr2_weight',
+                        help='org_weight, th_weight, expo_weight, dr_weight')
+
+    # costs
+    parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
+    parser.add_argument('--consistency_type', type=str,
+                        default="mse", help='consistency_type')
+    parser.add_argument('--consistency', type=float,
+                        default=0.1, help='consistency')
+    parser.add_argument('--consistency_rampup', type=float,
+                        default=200.0, help='consistency_rampup')
+
+    args = parser.parse_args()
+    return args
+
+
+def create_model(args, model_name, ema=False):
+    model = None
+    model = Baseline(1, 32, 3, 5, 2, 2, nn.Conv3d, nn.InstanceNorm3d, {'eps': 1e-5, 'affine': True}, nn.Dropout3d,
+                     {'p': 0, 'inplace': True}, nn.LeakyReLU, {'negative_slope': 1e-2, 'inplace': True}, False,
+                     False, lambda x: x, InitWeights_He(1e-2), False, True, True)
+    if args.is_pre_trained == 1:
+        path = './model_final_checkpoint.model'
+        saved_model = torch.load(path, map_location=torch.device('cpu'))
+
+        new_state_dict = OrderedDict()
+        curr_state_dict_keys = list(model.state_dict().keys())
+        for k, value in saved_model['state_dict'].items():
+            key = k
+            if key not in curr_state_dict_keys and key.startswith('module.'):
+                key = key[7:]
+            # logging.info(key)
+            new_state_dict[key] = value
+
+        model.load_state_dict(new_state_dict)
+        logging.info(' Pre-Trained Model Added')
+
+    if ema:
+        for param in model.parameters():
+            param.detach_()
+    return model
+
+def init_training_device(process_ID, fl_worker_num, gpu_num_per_machine):
+    # initialize the mapping from process ID to GPU ID: <process ID, GPU ID>
+    logging.info(fl_worker_num)
+    logging.info(gpu_num_per_machine)
+    if process_ID == 0:
+        device = torch.device("cuda:"+str(args.starting_gpu) if torch.cuda.is_available() else "cpu")
+        return device
+    else:
+        client_index = process_ID - 1
+        gpu_index = client_index % args.gpu_num_per_server + (args.starting_gpu + 1)
+        device = torch.device("cuda:" + str(gpu_index) if torch.cuda.is_available() else "cpu")
+        # logging.info(device)
+    return device
+
+
+if __name__ == "__main__":
+    # parse python script input parameters
+    if sys.platform == "darwin":
+        os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
+    parser = argparse.ArgumentParser()
+    args = add_args(parser)
+
+
+    # worker_number = 1
+    # process_id = 0
+    # customize the process name
+    comm, process_id, worker_number = FedML_init()
+    logging.basicConfig(level=logging.INFO,
+                        # logging.basicConfig(level=logging.DEBUG,
+                        format=str(
+                            process_id) + ' - %(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
+                        datefmt='%a, %d %b %Y %H:%M:%S')
+    # logging.basicConfig(level=logging.INFO)
+    logging.info(args)
+    logging.info(' Initialization ')
+    logging.info(process_id)
+    logging.info(worker_number)
+
+    str_process_name = "Fedml (single):" + str(process_id)
+    setproctitle.setproctitle(str_process_name)
+
+
+    # customize the log format
+    logging.basicConfig(level=logging.INFO,
+                        # logging.basicConfig(level=logging.DEBUG,
+                        format=str(
+                            process_id) + ' - %(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
+                        datefmt='%a, %d %b %Y %H:%M:%S')
+
+    hostname = socket.gethostname()
+    logging.info("#############process ID = " + str(process_id) +
+                 ", host name = " + hostname + "########" +
+                 ", process ID = " + str(os.getpid()) +
+                 ", process Name = " + str(psutil.Process(os.getpid())))
+
+
+
+    # initialize the wandb machine learning experimental tracking platform (https://www.wandb.com/).
+    if process_id == 0:
+        wandb.init(project="FML", name="SemiFL"
+            + "r" + str(args.comm_round) + "-e" + str(args.epochs) + "-lr" + str(args.lr)+"_threshold"+str(args.threshold), config=args)
+
+    # Set the random seed. The np.random seed determines the dataset partition.
+    # The torch_manual_seed determines the initial weight.
+    # We fix these two, so that we can reproduce the result.
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    device = init_training_device(process_id, worker_number - 1, args.gpu_num_per_server)
+    logging.info("process_id = %d, size = %d" % (process_id, worker_number))
+
+    ltrain_dataset = SemiFedKiTS19(1, train=True, pooled=True, labelled=1)
+    ltrain_data_num = len(ltrain_dataset)
+    train_data_global = torch.utils.data.DataLoader(ltrain_dataset, batch_size=2, shuffle=True, num_workers=1)
+
+    utrain_dataset = SemiFedKiTS19(1, train=True, pooled=True, labelled=0)
+    utrain_data_num = len(utrain_dataset)
+    utrain_dataloader = torch.utils.data.DataLoader(utrain_dataset, batch_size=2, shuffle=True, num_workers=1)
+
+    train_data_local_dict = {}
+    test_data_local_dict = {}
+    data_local_num_dict = {}
+    Client_ID_dict = {}
+    valid_dataset = SemiFedKiTS19(1, train=False, pooled=True, labelled=0)
+    for i in range(6):
+        if i <= 1:
+            client_train_data = SemiFedKiTS19(i, train=True, pooled=False, labelled=1) #labelled
+            Client_ID_dict[i] = 1
+            train_data_local_dict[i] = torch.utils.data.DataLoader(client_train_data, batch_size=2, shuffle=True, num_workers=1)
+        else:
+            client_train_data = SemiFedKiTS19(i, train=True, pooled=False, labelled=0)  # labelled
+            Client_ID_dict[i] = 0
+            train_data_local_dict[i] = torch.utils.data.DataLoader(client_train_data, batch_size=4, shuffle=True, num_workers=1)
+        data_local_num_dict[i] = len(client_train_data)
+        
+        test_data_local_dict[i] = torch.utils.data.DataLoader(valid_dataset, batch_size=2, shuffle=True, num_workers=1)
+    test_data_num = 210 - sum(data_local_num_dict.values())
+    train_data_num = sum(data_local_num_dict.values())
+
+
+    test_dataset = SemiFedKiTS19(1, train=False, pooled=True, labelled=1)
+    test_data_global = torch.utils.data.DataLoader(test_dataset, batch_size=2, shuffle=True, num_workers=1)
+
+    if process_id == 1 or process_id == 2:
+        logging.info(" Client ID "+str(process_id))
+        loss = DC_and_CE_loss({'batch_dice': True, 'smooth': 1e-5, 'do_bg': False}, {})
+    else:
+        logging.info(" Client ID " + str(process_id) + " label ignored loss")
+        loss = DC_and_CE_loss({'batch_dice': True, 'smooth': 1e-5, 'do_bg': False}, {}, ignore_label = 255)
+
+    model = create_model(args, model_name=args.model)
+    ema_model = create_model(args, model_name=args.model, ema=True)
+
+    FedML_FedAvg_distributed(
+        process_id,
+        worker_number,
+        device,
+        comm,
+        model, ema_model
+        train_data_num,
+        train_data_global,
+        test_data_global,
+        data_local_num_dict,  # need to check what this variable is for
+        train_data_local_dict,
+        test_data_local_dict,
+        args,
+        test_data_num,
+        None, None, None, Client_ID_dict, loss
+    )
+        

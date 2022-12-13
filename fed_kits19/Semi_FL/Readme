@@ -1,0 +1,4 @@
+###sh semi_sup.sh nnunet 1 2 3e-4 1 '-' 0 10 kits19 50 1 teacher_training 2 3 1000 0
+
+
+# Teacher model Training on lambda 5
