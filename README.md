@@ -1,5 +1,5 @@
-# FML-Federated Medical Learning
- Federated Medical imaging is a git repository that hosts naturals splits based Medical daatsets. Below is the list of Datasets included.
+# What If Kidney Tumor Segmentation Challenge (KiTS19) Never Happened
+ This repository hosts the code of our ICMLA paper What If Kidney Tumor Segmentation Challenge (KiTS19) Never Happened.
 
 
 ##KiTS19
@@ -62,5 +62,22 @@ For the preprocessing, it can take around ~30-45 minutes.
 With this preprocessing, running the experiments can be very time efficient as it saves the preprocessing time for every experiment run.
 
 #### Centralized Experiment:
+1. Go to fed_kits19/Centralized folder and run the following command
+```bash
+sh centralized_kits19.sh nnunet 0 0.0003 3000 0 kits19 1105 1 train 0
+```
+#### FL Experriments:
+1. Go to fed_kits19/FL folder and run the following command
+```bash
+sh fedavg_kits19.sh 2 1 2 nnunet 3000 1 0.003 kits19 3 0 train 1301 1
+```
 
+#### Semi-Supervised FL Experiments
+1. Go to fed_kits19/Semi_FL folder and run the following command
+```bash
+sh student_teacher_FL.sh nnunet 0 2 3e-4 1 '-' 0 10 kits19 2525 1 student_training 6 7 3000 1 mixup 6
+```
+
+#### Validation of any Expeiment:
+Once you have performed training, go to the fed_kits19/FL and choose the hyper-parameters (you used for running the training experiments) and run the validation.sh code. 
 
