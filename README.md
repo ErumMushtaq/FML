@@ -78,6 +78,6 @@ sh fedavg_kits19.sh 2 1 2 nnunet 3000 1 0.003 kits19 3 0 train 1301 1
 sh student_teacher_FL.sh nnunet 0 2 3e-4 1 '-' 0 10 kits19 2525 1 student_training 6 7 3000 1 mixup 6
 ```
 
-#### Validation of any Expeiment:
+#### Validation of any Experiment:
 Once you have performed training, go to the fed_kits19/FL and choose the hyper-parameters (you used for running the training experiments) and run the validation.sh code. 
 
